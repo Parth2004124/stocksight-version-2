@@ -250,7 +250,7 @@
                 <div class="relative">
                     <input type="text" id="stockInput"
                         class="w-full pl-8 pr-16 py-2 border border-slate-700 rounded text-sm focus:outline-none focus:border-slate-500 focus:ring-1 focus:ring-navy uppercase text-black"
-                        placeholder="Symbol (INFY) or MF Code" onkeypress="handleEnter(event)">
+                        placeholder="Search Stocks or Mutual Funds..." onkeypress="handleEnter(event)" oninput="handleSearchInput(event)" autocomplete="off">
                     <svg class="w-4 h-4 text-slate-500 absolute left-2.5 top-2.5" fill="none" stroke="currentColor"
                         viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -258,6 +258,9 @@
                     </svg>
                     <button onclick="processInput()"
                         class="absolute right-1 top-1 bottom-1 px-3 bg-[#020617] hover:bg-gray-200 text-xs font-semibold rounded text-slate-300">Add</button>
+                </div>
+                <!-- Autocomplete Dropdown -->
+                <div id="autocomplete-results" class="hidden absolute top-full left-0 right-0 mt-1 bg-[#1e293b] border border-slate-700 rounded-md shadow-2xl z-50 max-h-60 overflow-y-auto custom-scroll text-sm">
                 </div>
             </div>
         </div>

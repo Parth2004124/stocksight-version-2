@@ -639,5 +639,93 @@ function updateReqCount() {
     if (el) el.style.display = activeRequests > 0 ? 'block' : 'none';
 }
 
+// --- AUTOCOMPLETE SEARCH ---
+let searchTimeout;
+
+async function handleSearchInput(event) {
+    const query = event.target.value.trim();
+    const dropdown = document.getElementById('autocomplete-results');
+    
+    if (query.length < 3) {
+        dropdown.classList.add('hidden');
+        return;
+    }
+
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(async () => {
+        dropdown.innerHTML = `<div class="p-3 text-center text-slate-400 text-xs flex items-center justify-center gap-2"><div class="loader"></div> Searching...</div>`;
+        dropdown.classList.remove('hidden');
+
+        try {
+            const [mfRes, stockRes] = await Promise.allSettled([
+                fetchWithFallback(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(query)}`),
+                fetchWithFallback(`https://www.screener.in/api/company/search/?q=${encodeURIComponent(query)}`)
+            ]);
+
+            let resultsHTML = '';
+            let totalResults = 0;
+
+            // Handle Stocks
+            if (stockRes.status === 'fulfilled' && stockRes.value) {
+                const data = typeof stockRes.value === 'string' ? JSON.parse(stockRes.value) : stockRes.value;
+                if (Array.isArray(data)) {
+                    data.slice(0, 5).forEach(item => {
+                        const tickerMatch = item.url.match(/\/company\/(.*?)\//);
+                        const ticker = tickerMatch ? tickerMatch[1] : null;
+                        if (ticker) {
+                            totalResults++;
+                            resultsHTML += `<div onclick="selectSearchResult('${ticker}')" class="p-2 border-b border-slate-700/50 hover:bg-[#0f172a] cursor-pointer flex justify-between items-center transition-colors">
+                                <span class="font-medium text-slate-200 text-xs truncate max-w-[75%] pr-2" title="${item.name}">${item.name}</span>
+                                <span class="text-[9px] bg-indigo-900/30 text-indigo-400 px-1.5 py-0.5 rounded border border-indigo-800/50 flex-shrink-0">EQ: ${ticker}</span>
+                            </div>`;
+                        }
+                    });
+                }
+            }
+
+            // Handle MFs
+            if (mfRes.status === 'fulfilled' && mfRes.value) {
+                const data = typeof mfRes.value === 'string' ? JSON.parse(mfRes.value) : mfRes.value;
+                if (Array.isArray(data)) {
+                    data.slice(0, 5).forEach(item => {
+                        totalResults++;
+                        resultsHTML += `<div onclick="selectSearchResult('${item.schemeCode}')" class="p-2 border-b border-slate-700/50 hover:bg-[#0f172a] cursor-pointer flex justify-between items-center transition-colors">
+                            <span class="font-medium text-slate-200 text-xs truncate max-w-[75%] pr-2" title="${item.schemeName}">${item.schemeName}</span>
+                            <span class="text-[9px] bg-amber-900/30 text-amber-400 px-1.5 py-0.5 rounded border border-amber-800/50 flex-shrink-0">MF: ${item.schemeCode}</span>
+                        </div>`;
+                    });
+                }
+            }
+
+            if (totalResults === 0) {
+                dropdown.innerHTML = `<div class="p-3 text-center text-slate-500 text-xs italic">No results found for "${query}"</div>`;
+            } else {
+                dropdown.innerHTML = resultsHTML;
+            }
+
+        } catch (e) {
+            dropdown.innerHTML = `<div class="p-3 text-center text-red-400 text-xs">Search failed</div>`;
+        }
+    }, 400);
+}
+
+function selectSearchResult(symbol) {
+    const input = document.getElementById('stockInput');
+    const dropdown = document.getElementById('autocomplete-results');
+    input.value = symbol;
+    dropdown.classList.add('hidden');
+    processInput();
+}
+
+// Hide dropdown when clicking outside
+document.addEventListener('click', (e) => {
+    const dropdown = document.getElementById('autocomplete-results');
+    const input = document.getElementById('stockInput');
+    if (dropdown && !dropdown.contains(e.target) && e.target !== input) {
+        dropdown.classList.add('hidden');
+    }
+});
+
 // Start App
 document.addEventListener('DOMContentLoaded', initApp);
+
