@@ -1,0 +1,93 @@
+# StockSight Version 2 - Architecture & Logic Breakdown
+
+## 1. Scraping Logic (URLs, Selectors, Fallback Order)
+
+The application utilizes a highly resilient client-side scraping mechanism that bounces requests through multiple CORS proxies to prevent blocking. 
+
+* Proxy Fallback System (`fetchWithFallback`): It routes requests through an array of proxies in succession: CodeTabs → AllOrigins → CorsProxy.io → ThingProxy. 
+* Asset Detection: If a ticker is purely 5-6 digits, it assumes it's a Mutual Fund. If the ticker contains ETF keywords (e.g., BEES, GOLD, LIQUID), it skips Screener metrics and goes straight to Google/Yahoo wrappers.
+
+Fetch Order and Selection Logic (Per Asset Type):
+
+1. Mutual Funds:
+   - URL: `https://api.mfapi.in/mf/{code}`
+   - Logic: Uses direct JSON API. Extracts `scheme_name` and current `nav`. Hands historical data to `calculateMFReturns` to generate 1yr, 3yr, and 5yr CAGR.
+
+2. Stocks & ETFs (The Primary Fallback Chain):
+   - Attempt 1: Screener.in (Skipped for ETFs)
+     * URLs: Directly attempts `https://www.screener.in/company/{symbol}/consolidated/`. If soft-blocked/404, it hits the API `https://www.screener.in/api/company/search/?q={symbol}` to resolve the exact URL path.
+     * Selectors: Parses HTML via `DOMParser`.
+       - Basic Metrics: Iterates over `#top-ratios li` checking inner text for "Current Price", "Stock P/E", "ROE", "ROCE", "Market Cap".
+       - Tough Metrics (Regex): For OPM, it looks for `OPM %` but falls back to a regex match. For Growth, it searches for sections named "Compounded Sales Growth" and "Compounded Profit Growth", extracting the TTM, 3-year, or 5-year percentages using regex.
+
+   - Attempt 2: Google Finance (If Screener fails or for ETFs)
+     * URL: `https://www.google.com/finance/quote/{sym}:NSE` (falls back to `:BSE`).
+     * Selectors: Regex matching. Price is extracted via class `YMlKec fxKbKc`. Names and 52-week High/Low ranges are parsed using capture groups.
+
+   - Attempt 3: Yahoo Finance (The final safety net)
+     * URL: `v8/finance/chart/{sym}?interval=1mo&range=5y` and `v7/finance/quote?symbols={sym}`.
+     * Selectors: Direct JSON traversal. Looks for `meta.regularMarketPrice`, calculates historical returns dynamically using the historical quotes array, and pulls `beta` and `trailingPE`.
+
+## 2. Data Transformation (Raw → Clean Mapping)
+
+Once raw data is acquired, it's standardized uniformly before calculation. 
+
+Mapping Schema:
+* name: Acquired from Screener <H1>, Google Finance title, or Yahoo shortName.
+* price: Parsed float (commas stripped).
+* type: Mapped to either 'STOCK', 'ETF', or 'FUND'.
+* returns: Mapped to an object containing { r1y, r3y, r5y }.
+* growth & profitGrowth: Direct mapping to Sales / Profit CAGR.
+
+Data Cleanups & Industry Normalization:
+* Missing data heavily penalizes standard stocks but applies leniency for varying sectors via `detectIndustry(data)`.
+* Depending on whether a company is BANKING, IT, FMCG, etc., metrics are mapped into specific score multipliers. For example, BANKING maps to an { roe } requirement and adjusts baseline scores: Business x 1.1, Moat x 1.2. IT emphasizes { opm }.
+
+## 3. Core Function Map
+
+A. Fetch & Hydrate Data
+* fetchAsset(input): Core gateway. Checks data length/type and triggers sub-fetchers.
+* fetchStockOrETF(sym) / fetchMutualFund(code): Extractor engines. Builds the raw metadata object and caches the price into livePrices.
+
+B. Brain & Processing (logic.js)
+* calculateFundamentalScore(data): Analyzes pure financials. 
+  - For Stocks: Distributes points to business, moat, management, and risk thresholds.
+  - For ETFs/Funds: Re-routes points based entirely on returns and trend strength.
+* calculatePortersScore(data): Translates quantitative data into Porter's 5 Forces.
+* normalizeFundamentalScore(fScore, data): Modifies the baseline score using the INDUSTRY_PROFILES array to weigh specific components correctly per sector.
+
+C. Output Generation
+* calculateMoreshwarLevels(price, fScore, pScore, isHolding): Target generation formula.
+* calculatePortfolioAggregates(): Scans all holdings, computes weighted betas, identifies sector exposures, and flags risks.
+
+## 4. Chatbot Trigger Logic (stocky.js)
+
+Stocky acts as a highly capable NLP intent mapping engine, turning user inputs into system queries:
+
+1. Normalization (normalizeText): Converts raw queries to lowercase and swaps out all synonyms from the NLP_SYNONYMS dictionary.
+2. Intent Engine (mapQueryToIntent): Matches the normalized string against triggers and returns a specific type:
+   - COMPARE: Triggered by "vs" or "compare".
+   - FETCH_NEW: Searches for unknown 3-12 letter words and issues a fetchAsset command.
+   - SUMMARY / RISK / EFFICIENCY: Returns the output of calculatePortfolioAggregates.
+   - EXPLAIN: Targets an isolated stock, searching for score/risk/levels tags.
+   - ALLOCATION_SIM: Triggered by regex and keywords ("Invest 1 lakh"). Uses a Score-Weighted Strategy to calculate share allocations.
+3. Context Memory: Saves the last analyzed ticker to stockyContext.lastAsset so follow up questions work correctly.
+
+## 5. UI Micro-Behavior, Animations, & Edge Cases
+
+The UI (primarily managed in `view.js`) makes heavy use of visual feedback loops and micro-interactions.
+
+A. Loading States:
+* Card Skeletons (`createCardSkeleton`): When fetching data, the UI immediately drops a placeholder dark card with an `<div class="loader"></div>` spinner inside a translucent `[#0f172a]/80` overlay.
+* Inline Watchlist Loaders: The watchlist item displays a micro `w-3 h-3` CSS spinner next to the ticker while it fetches the price.
+* Cloud Sync Pulse (`updateCloudStatus`): The top nav sync indicator utilizes `bg-yellow-400 animate-pulse` for 'Saving' and transitions to solid green or red.
+
+B. Animations & Micro-Interactions:
+* Tab Transitions: Switching between 'Fundamental' and 'Porter's 5' modes on the stock cards uses an `animate-fade-in` CSS class ensuring the content transitions smoothly rather than appearing blocky.
+* Chatbot Sliding (`toggleStocky`): The chatbot window uses Tailwind utility combinations (`opacity-0 scale-95`) coupled with precise JavaScript `setTimeout()` boundaries (10ms to show, 300ms to hide) to create a fluid drop-and-scale intro animation.
+* Watchlist Actions: The "Del" (Delete) button is hidden until hovered, leveraging `group-hover:opacity-100 transition-colors` to prevent UI clutter.
+
+C. Edge UI Cases:
+* Error Cards (`renderErrorCard`): If proxies fail or Screener blocks the request, the UI does not crash. It replaces the card with a structured error frame displaying the reason ("Proxy Error") and provides immediate action buttons -> [Retry] and [Remove].
+* Frozen / Locked Prices: When an asset is first evaluated (or bought), its spot price and targets are "locked" preventing the 'Y+X' Moreshwar levels from rapidly shifting with intraday volatility. The UI renders a floating "Locked @ ₹X" badge positioned via `-top-2 right-1`. Clicking the `✖` invokes `unlockPrice()` to discard the frozen cache and re-evaluate live.
+* Empty State Management: If you clear all assets, the logic toggles `updateViewCounts()` ensuring the "Empty Watchlist" placeholder and main illustrations appear gracefully by flipping `.style.display` logic without needing page reloads.
